@@ -1066,7 +1066,7 @@ startAnimation = (el, properties, options, timeoutId) ->
   endProperties = {}
   transforms = []
   for k, v of properties
-    if transformProperties.contains(k)
+    if el.style? and transformProperties.contains(k)
       transforms.push([k, v])
     else
       endProperties[k] = createInterpolable(v)
@@ -1443,8 +1443,8 @@ dynamics.stop = makeArrayFn (el, options={}) ->
     animationsTimeouts = animationsTimeouts.filter (timeout) ->
       if timeout.el == el and (!options.filter? or options.filter(timeout))
         dynamics.clearTimeout(timeout.id)
-        return true
-      false
+        return false
+      true
 
   animations = animations.filter (animation) ->
     animation.el != el

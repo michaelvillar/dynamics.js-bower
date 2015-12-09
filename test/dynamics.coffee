@@ -206,7 +206,7 @@ describe 'dynamics.animate', ->
       done()
     , 150
 
-  it 'animates properties of a object correctly', (done) ->
+  it 'animates properties of an object correctly', (done) ->
     assertTypes = (object) ->
       expect(typeof(object.number)).to.be.equal('number', 'object.number has the wrong type')
       expect(typeof(object.negative)).to.be.equal('number', 'object.negative has the wrong type')
@@ -234,7 +234,9 @@ describe 'dynamics.animate', ->
       array: ["0deg", 0, "1.10", 10, "#FFFFFF"],
       hexColor: "#FFFFFF",
       rgbColor: "rgb(255, 255, 255)",
-      rgbaColor: "rgba(255, 255, 255, 0)"
+      rgbaColor: "rgba(255, 255, 255, 0)",
+      translateX: 0,
+      rotateZ: 0
     }
     previous = JSON.parse(JSON.stringify(object))
     dynamics.animate(object, {
@@ -245,7 +247,9 @@ describe 'dynamics.animate', ->
       array: ["100deg", 40, "2.20", 20, "#123456"],
       hexColor: "#123456",
       rgbColor: "rgb(18, 52, 86)",
-      rgbaColor: "rgba(18, 52, 86, 1)"
+      rgbaColor: "rgba(18, 52, 86, 1)",
+      translateX: 10,
+      rotateZ: 1
     }, {
       duration: 100
     })
@@ -348,6 +352,30 @@ describe 'dynamics.stop', ->
     setTimeout ->
       done()
     , 150
+
+  it 'also works with multiple delayed animations', (done) ->
+    els = [document.createElement('div'), document.createElement('div'), document.createElement('div')]
+    delay = 100
+    for el in els
+      dynamics.animate(el, {
+        left: 100
+      }, {
+        duration: 100,
+        delay: delay,
+        change: ->
+          assert(false, "change shouldn't be called")
+        ,
+        complete: ->
+          assert(false, "complete shouldn't be called")
+      })
+      delay += 50
+    setTimeout ->
+      for el in els
+        dynamics.stop(el)
+    , 50
+    setTimeout ->
+      done()
+    , 450
 
 describe 'curves', ->
   describe 'dynamics.linear', ->
