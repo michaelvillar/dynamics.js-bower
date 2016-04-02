@@ -66,7 +66,7 @@ applyProperties = (el, properties) ->
     else
       if v.format?
         v = v.format()
-      else
+      if typeof(v) == 'number'
         v = "#{v}#{unitForProperty(k, v)}"
       if isSVG && svgProperties.contains(k)
         el.setAttribute(k, v)
@@ -184,11 +184,81 @@ getCurrentProperties = (el, keys) ->
 
 # Interpolable
 createInterpolable = (value) ->
-  klasses = [InterpolableColor, InterpolableArray, InterpolableObject, InterpolableWithUnit]
+  klasses = [InterpolableArray, InterpolableObject, InterpolableNumber, InterpolableString]
   for klass in klasses
     interpolable = klass.create(value)
     return interpolable if interpolable?
   null
+
+class InterpolableString
+  constructor: (@parts) ->
+
+  interpolate: (endInterpolable, t) =>
+    start = @parts
+    end = endInterpolable.parts
+    newParts = []
+    for i in [0...Math.min(start.length, end.length)]
+      if start[i].interpolate?
+        newParts.push(start[i].interpolate(end[i], t))
+      else
+        newParts.push(start[i])
+    new InterpolableString(newParts)
+
+  format: =>
+    parts = @parts.map (val) ->
+      if val.format?
+        val.format()
+      else
+        val
+    parts.join('')
+
+  @create: (value) =>
+    value = "#{value}"
+    matches = []
+
+    types = [
+      {
+        re: /(#[a-f\d]{3,6})/ig,
+        klass: InterpolableColor,
+        parse: (v) -> v,
+      },
+      {
+        re: /(rgba?\([0-9.]*, ?[0-9.]*, ?[0-9.]*(?:, ?[0-9.]*)?\))/ig,
+        klass: InterpolableColor,
+        parse: (v) -> v,
+      },
+      {
+        re: /([-+]?[\d.]+)/ig,
+        klass: InterpolableNumber,
+        parse: parseFloat,
+      },
+    ]
+
+    for type in types
+      re = type.re
+      while match = re.exec(value)
+        matches.push({
+          index: match.index,
+          length: match[1].length,
+          interpolable: type.klass.create(type.parse(match[1])),
+        })
+
+    matches = matches.sort((a, b) ->
+      a.index > b.index
+    )
+
+    parts = []
+    index = 0
+    for match in matches
+      continue if match.index < index
+      if match.index > index
+        parts.push(value.substring(index, match.index))
+      parts.push(match.interpolable)
+      index = match.index + match.length
+    if index < value.length
+      parts.push(value.substring(index))
+
+    return new InterpolableString(parts)
 
 class InterpolableObject
   constructor: (obj) ->
@@ -216,28 +286,24 @@ class InterpolableObject
       return new InterpolableObject(obj)
     null
 
-class InterpolableWithUnit
-  constructor: (value, @prefix, @suffix) ->
+class InterpolableNumber
+  constructor: (value) ->
     @value = parseFloat(value)
 
   interpolate: (endInterpolable, t) =>
     start = @value
     end = endInterpolable.value
-    new InterpolableWithUnit((end - start) * t + start, endInterpolable.prefix || @prefix, endInterpolable.suffix || @suffix)
+    new InterpolableNumber((end - start) * t + start)
 
   format: =>
-    return roundf(@value, 5) if !@prefix? and !@suffix?
-    @prefix + roundf(@value, 5) + @suffix
+    roundf(@value, 5)
 
   @create: (value) =>
-    return new InterpolableWithUnit(value) if typeof(value) != "string"
-    match = ("#{value}").match("([^0-9.+-]*)([0-9.+-]+)([^0-9.+-]*)")
-    if match?
-      return new InterpolableWithUnit(match[2], match[1], match[3])
+    return new InterpolableNumber(value) if typeof(value) == 'number'
     null
 
 class InterpolableArray
-  constructor: (@values, @sep) ->
+  constructor: (@values) ->
 
   interpolate: (endInterpolable, t) =>
     start = @values
@@ -248,36 +314,25 @@ class InterpolableArray
         newValues.push(start[i].interpolate(end[i], t))
       else
         newValues.push(start[i])
-    new InterpolableArray(newValues, @sep)
+    new InterpolableArray(newValues)
 
   format: =>
-    values = (@values.map (val) ->
+    @values.map (val) ->
       if val.format?
         val.format()
       else
         val
-    )
-    if @sep?
-      values.join(@sep)
-    else
-      values
 
-  @createFromArray: (arr, sep) =>
+  @createFromArray: (arr) =>
     values = arr.map (val) ->
       createInterpolable(val) || val
     values = values.filter (val) ->
       val?
-    return new InterpolableArray(values, sep)
+    return new InterpolableArray(values)
 
   @create: (value) =>
-    return @createFromArray(value, null) if value instanceof Array
-    return unless typeof(value) == "string"
-    seps = [' ', ',', '|', ';', '/', ':']
-    for sep in seps
-      arr = value.split(sep)
-      if arr.length > 1
-        return @createFromArray(arr, sep)
-    return null
+    return @createFromArray(value) if value instanceof Array
+    null
 
 class Color
   constructor: (@rgb={}, @format) ->
@@ -1029,7 +1084,7 @@ animationTick = (t, animation) ->
 
   properties = {}
   if tt >= 1
-    if animation.curve.initialForce
+    if animation.curve.returnsToSelf
       properties = animation.properties.start
     else
       properties = animation.properties.end
@@ -1069,11 +1124,14 @@ startAnimation = (el, properties, options, timeoutId) ->
     if el.style? and transformProperties.contains(k)
       transforms.push([k, v])
     else
-      endProperties[k] = createInterpolable(v)
-      if endProperties[k] instanceof InterpolableWithUnit && el.style?
-        # We don't have the unit, we'll get the default one
-        endProperties[k].prefix = ''
-        endProperties[k].suffix ?= unitForProperty(k, 0)
+      interpolable = createInterpolable(v)
+      if interpolable instanceof InterpolableNumber && el.style?
+        interpolable = new InterpolableString([
+          interpolable,
+          unitForProperty(k, 0),
+        ])
+
+      endProperties[k] = interpolable
 
   if transforms.length > 0
     isSVG = isSVGElement(el)
@@ -1177,7 +1235,7 @@ dynamics.linear = ->
     t
 
 dynamics.spring = (options={}) ->
-  applyDefaults(options, arguments.callee.defaults)
+  applyDefaults(options, dynamics.spring.defaults)
 
   frequency = Math.max(1, options.frequency / 20)
   friction = Math.pow(20, options.friction / 100)
@@ -1221,7 +1279,7 @@ dynamics.spring = (options={}) ->
     1 - (At * Math.cos(angle))
 
 dynamics.bounce = (options={}) ->
-  applyDefaults(options, arguments.callee.defaults)
+  applyDefaults(options, dynamics.bounce.defaults)
 
   frequency = Math.max(1, options.frequency / 20)
   friction = Math.pow(20, options.friction / 100)
@@ -1237,11 +1295,11 @@ dynamics.bounce = (options={}) ->
 
     angle = frequency * t * a + b
     (At * Math.cos(angle))
-  fn.initialForce = true
+  fn.returnsToSelf = true
   fn
 
 dynamics.gravity = (options={}) ->
-  applyDefaults(options, arguments.callee.defaults)
+  applyDefaults(options, dynamics.gravity.defaults)
 
   bounciness = Math.min((options.bounciness / 1250), 0.8)
   elasticity = options.elasticity / 1000
@@ -1251,7 +1309,7 @@ dynamics.gravity = (options={}) ->
   L = do ->
     b = Math.sqrt(2 / gravity)
     curve = { a: -b, b: b, H: 1 }
-    if options.initialForce
+    if options.returnsToSelf
       curve.a = 0
       curve.b = curve.b * 2
     while curve.H > 0.001
@@ -1263,14 +1321,14 @@ dynamics.gravity = (options={}) ->
     L = b - a
     t2 = (2 / L) * (t) - 1 - (a * 2 / L)
     c = t2 * t2 * H - H + 1
-    c = 1 - c if options.initialForce
+    c = 1 - c if options.returnsToSelf
     c
 
   # Create curves
   do ->
     b = Math.sqrt(2 / (gravity * L * L))
     curve = { a: -b, b: b, H: 1 }
-    if options.initialForce
+    if options.returnsToSelf
       curve.a = 0
       curve.b = curve.b * 2
     curves.push curve
@@ -1289,16 +1347,16 @@ dynamics.gravity = (options={}) ->
       break unless curve
 
     if !curve
-      v = if options.initialForce then 0 else 1
+      v = if options.returnsToSelf then 0 else 1
     else
       v = getPointInCurve(curve.a, curve.b, curve.H, t)
     v
-  fn.initialForce = options.initialForce
+  fn.returnsToSelf = options.returnsToSelf
   fn
 
 dynamics.forceWithGravity = (options={}) ->
-  applyDefaults(options, arguments.callee.defaults)
-  options.initialForce = true
+  applyDefaults(options, dynamics.forceWithGravity.defaults)
+  options.returnsToSelf = true
   dynamics.gravity(options)
 
 dynamics.bezier = do ->
@@ -1350,7 +1408,6 @@ dynamics.bezier = do ->
   # Actual bezier function
   (options={}) ->
     points = options.points
-    returnsToSelf = false
 
     # Init different curves
     Bs = do ->
@@ -1365,30 +1422,32 @@ dynamics.bezier = do ->
         )(points[k], points[k + 1])
       Bs
 
-    (t) ->
+    fn = (t) ->
       if t == 0
         return 0
       else if t == 1
         return 1
       else
-        yForX(t, Bs, returnsToSelf)
+        yForX(t, Bs, @returnsToSelf)
+    fn.returnsToSelf = points[points.length - 1].y == 0
+    fn
 
 dynamics.easeInOut = (options={}) ->
-  friction = options.friction ? arguments.callee.defaults.friction
+  friction = options.friction ? dynamics.easeInOut.defaults.friction
   dynamics.bezier(points: [
     { x:0, y:0, cp:[{ x:0.92 - (friction / 1000), y:0 }] },
     { x:1, y:1, cp:[{ x:0.08 + (friction / 1000), y:1 }] }
   ])
 
 dynamics.easeIn = (options={}) ->
-  friction = options.friction ? arguments.callee.defaults.friction
+  friction = options.friction ? dynamics.easeIn.defaults.friction
   dynamics.bezier(points: [
     { x:0, y:0, cp:[{ x:0.92 - (friction / 1000), y:0 }] },
     { x:1, y:1, cp:[{ x:1, y:1 }] }
   ])
 
 dynamics.easeOut = (options={}) ->
-  friction = options.friction ? arguments.callee.defaults.friction
+  friction = options.friction ? dynamics.easeOut.defaults.friction
   dynamics.bezier(points: [
     { x:0, y:0, cp:[{ x:0, y:0 }] },
     { x:1, y:1, cp:[{ x:0.08 + (friction / 1000), y:1 }] }
